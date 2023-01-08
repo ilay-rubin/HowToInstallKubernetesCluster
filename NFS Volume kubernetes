@@ -1,0 +1,159 @@
+#Run the following commands on the node you wanted to make a volume from, for example:
+
+apt update && apt -y upgrade
+apt install -y nfs-server
+mkdir /data
+cat << EOF >> /etc/exports
+/data 192.168.12.8(rw,no_subtree_check,no_root_squash)
+EOF
+systemctl enable --now nfs-server
+exportfs -ar
+#Now, you go into the nodes you want to work with this volume and run:
+
+apt install -y nfs-common
+
+
+#An example of my deployment where I ran the nfs mount on the worker2 and the application on the worker in order for the deployment to work, you need to do the following commands:
+#1. You need to create a secret, for example:
+
+apiVersion: v1
+kind: Secret
+metadata:
+   name: mysql-secret
+data:
+   username: cnRnLWRldm9wcw==
+   password: cnRnLWRldm9wcw==
+   database: dGVzdA==
+   root-password: cnRnLXBhc3N3b3J
+
+#2. You need to define the folder in the file etc/exports/, for example this is how my file looks like:
+
+# /etc/exports: the access control list for filesystems which may be exported
+#               to NFS clients.  See exports(5).
+#
+# Example for NFSv2 and NFSv3:
+# /srv/homes       hostname1(rw,sync,no_subtree_check) hostname2(ro,sync,no_subtree_check)
+#
+# Example for NFSv4:
+# /srv/nfs4        gss/krb5i(rw,sync,fsid=0,crossmnt,no_subtree_check)
+# /srv/nfs4/homes  gss/krb5i(rw,sync,no_subtree_check)
+#
+/rtg-data 192.168.31.141(rw,no_subtree_check,no_root_squash)#master
+/rtg-data 192.168.31.39(rw,no_subtree_check,no_root_squash)#worker
+/rtg-data 192.168.31.150(rw,no_subtree_check,no_root_squash)#worker
+/rtg-data/mysql 192.168.31.141(rw,no_subtree_check,no_root_squash)#worker
+/rtg-data/mysql 192.168.31.39(rw,no_subtree_check,no_root_squash)#worker
+/rtg-data/mysql 192.168.31.150(rw,no_subtree_check,no_root_squash)#worker
+
+#3. After arranging the file, run the following command: exportfs -ar.
+
+#4. After you have done all this, you can run the mysql deployment.
+
+kind: PersistentVolume
+metadata:
+  name: nfs-worker2-mysql
+  labels:
+    storage.k8s.io/name: nfs
+    storage.k8s.io/part-of: kubernetes-complete-reference
+    storage.k8s.io/created-by: ssbostan
+spec:
+  accessModes:
+    - ReadWriteOnce
+    - ReadOnlyMany
+    - ReadWriteMany
+  capacity:
+    storage: 10Gi
+  storageClassName: "rtg-data-mysql"
+  persistentVolumeReclaimPolicy: Recycle
+  volumeMode: Filesystem
+  nfs:
+    server: 192.168.31.39 #worker2
+    path: /rtg-data/mysql #must mkdir /rtg-data && mkdir /rtg-data/mysql
+    readOnly: no
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs-worker2
+  labels:
+    storage.k8s.io/name: nfs
+    storage.k8s.io/part-of: kubernetes-complete-reference
+    storage.k8s.io/created-by: ssbostan
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: "rtg-data-mysql"
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 3306
+    targetPort: 3306
+    nodePort: 31306
+  selector:
+    app: mysql
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/part-of: kubernetes-complete-reference
+    app.kubernetes.io/created-by: ssbostan
+spec:
+  replicas:
+  selector:
+    matchLabels:
+      app: mysql
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      nodeName: worker #the node that runs the application 
+      containers:
+        - image: mysql:8.0.18
+          name: mysql
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              #value: pass
+              valueFrom:
+                secretKeyRef:
+                   name: mysql-secret
+                   key: root-password
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                   name: mysql-secret
+                   key: username
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                   name: mysql-secret
+                   key: password
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                   name: mysql-secret
+                   key: database
+          ports:
+            - containerPort: 3306
+          volumeMounts:
+            - mountPath: /var/lib/mysql
+              name: nfs-worker2-mysql
+      volumes:
+        - name: nfs-worker2-mysql
+          nfs:
+            server: 192.168.31.39 #worker2
+            path: /rtg-data/mysql
+            readOnly: no
