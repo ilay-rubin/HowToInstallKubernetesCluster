@@ -1,0 +1,247 @@
+#kubernetes installation
+#master : 
+sudo apt update
+sudo apt install net-tools
+sudo apt install openssh-server openssh-client
+#only master 7-13 :
+sudo ufw allow 6443/tcp
+sudo ufw allow 2379/tcp
+sudo ufw allow 2380/tcp
+sudo ufw allow 10250/tcp
+sudo ufw allow 10257/tcp
+sudo ufw allow 10259/tcp
+sudo ufw reload
+cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+br_netfilter
+EOF
+cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+EOF
+sudo nano /etc/fstab 
+in the file you need to disable swap like this : #/swapfile 
+sudo sysctl --system
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg lsb-release
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+sudo usermod -aG docker $USER
+sudo reboot 
+###rebooting!!!
+sudo git clone https://github.com/Mirantis/cri-dockerd.git
+sudo chown -R $USER:$USER cri-dockerd
+sudo wget https://storage.googleapis.com/golang/getgo/installer_linux
+sudo chown -R $USER:$USER install_linux
+chmod +x ./installer_linux
+./installer_linux
+source ~/.bash_profile
+cd cri-dockerd
+mkdir bin
+go build -o bin/cri-dockerd
+sudo mkdir -p /usr/local/bin
+sudo install -o root -g root -m 0755 bin/cri-dockerd /usr/local/bin/cri-dockerd
+sudo su
+cp -a packaging/systemd/* /etc/systemd/system
+sed -i -e 's,/usr/bin/cri-dockerd,/usr/local/bin/cri-dockerd,' /etc/systemd/system/cri-docker.service
+systemctl daemon-reload
+systemctl enable cri-docker.service
+systemctl enable --now cri-docker.socket
+exit
+sudo apt update
+sudo apt install -y apt-transport-https ca-certificates curl
+sudo curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://packages.cloud.google.com/apt/doc/apt-key.gpg
+echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+sudo apt update
+sudo apt install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+sudo kubeadm init --pod-network-cidr=10.244.0.0/16 --cri-socket=unix:///var/run/cri-dockerd.sock
+#Save it, this output will be needed on the Worker nodes 
+##kubeadm join 192.168.0.10:6443 --token nzy73q.3s2ig8r2ue09wrjy \
+  ## --discovery-token-ca-cert-hash sha256:0866420e1833c5a0710c92712d56468b4576b8bd8f00c381232dd993d89a0246
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
+##only on Worker node 69-71 :
+sudo ufw allow 10250/tcp
+sudo ufw allow 30000:32767/tcp
+sudo ufw reload
+##the out put that you save above run it on worker node :
+##sudo kubeadm join 192.168.0.10:6443 --token nzy73q.3s2ig8r2ue09wrjy \
+  ##      --discovery-token-ca-cert-hash sha256:0866420e1833c5a0710c92712d56468b4576b8bd8f00c381232dd993d89a0246 --cri-socket=unix:///var/run/cri-dockerd.sock
+
+MASTER: 
+sudo kubeadm reset --cri-socket=/var/run/cri-dockerd.sock
+sudo rm -r  ~/.kube
+sudo kubeadm init --pod-network-cidr=10.244.0.0/16 --cri-socket=unix:///var/run/cri-dockerd.sock
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
+
+אם אתה רוצה לעבוד אך ורק על ה-cluster בלי workers תעשה את הפקודה הבאה  : 
+kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+
+             WORKER:
+sudo kubeadm reset --cri-socket=/var/run/cri-dockerd.sock
+sudo rm -r  ~/.kube
+הפקודה הבאה צריכה להופיע ב-master שלך צריך להוסיף רק מה שסימנתי בכחול!
+sudo kubeadm join 192.168.0.10:6443 --token nzy73q.3s2ig8r2ue09wrjy \
+        --discovery-token-ca-cert-hash sha256:0866420e1833c5a0710c92712d56468b4576b8bd8f00c381232dd993d89a0246 --cri-socket=unix:///var/run/cri-dockerd.sock
+
+“NFS”-Network-File-System
+תריץ את הפקודות הבאות על ה-node שרצית לעשות volume ממנו , לדוגמא : 
+apt update && apt -y upgrade
+apt install -y nfs-server
+mkdir /data
+cat << EOF >> /etc/exports
+/data 192.168.12.8(rw,no_subtree_check,no_root_squash)
+EOF
+systemctl enable --now nfs-server
+exportfs -ar
+עכשיו , אתה נכנס לתוך ה-nodes שאתה רוצה שיעבדו עם ה-volume הזה ומריץ : 
+
+apt install -y nfs-common
+דוגמא ל-deployment שלי שכאן הרצתי את ה-nfs mount על ה-worker2 ואת האפליקציה על ה-worker  כדי ש-deployment יפעל צריך לעשות את הפקודות הבאות: 
+צריך ליצור secret , לדוגמא : 
+apiVersion: v1
+kind: Secret
+metadata:
+   name: mysql-secret
+data:
+   username: cnRnLWRldm9wcw==
+   password: cnRnLWRldm9wcw==
+   database: dGVzdA==
+   root-password: cnRnLXBhc3N3b3J
+צריך להגדיר את התקייה בקובץ etc/exports/ , לדוגמא ככה נראה הקובץ שלי : 
+# /etc/exports: the access control list for filesystems which may be exported
+#               to NFS clients.  See exports(5).
+#
+# Example for NFSv2 and NFSv3:
+# /srv/homes       hostname1(rw,sync,no_subtree_check) hostname2(ro,sync,no_subtree_check)
+#
+# Example for NFSv4:
+# /srv/nfs4        gss/krb5i(rw,sync,fsid=0,crossmnt,no_subtree_check)
+# /srv/nfs4/homes  gss/krb5i(rw,sync,no_subtree_check)
+#
+/rtg-data 192.168.31.141(rw,no_subtree_check,no_root_squash)#master
+/rtg-data 192.168.31.39(rw,no_subtree_check,no_root_squash)#worker
+/rtg-data 192.168.31.150(rw,no_subtree_check,no_root_squash)#worker
+/rtg-data/mysql 192.168.31.141(rw,no_subtree_check,no_root_squash)#worker
+/rtg-data/mysql 192.168.31.39(rw,no_subtree_check,no_root_squash)#worker
+/rtg-data/mysql 192.168.31.150(rw,no_subtree_check,no_root_squash)#worker
+
+אחרי שסידרת את הקובץ תריץ את הפקודה הבאה : exportfs -ar .
+אחרי שעשית את כל זה אתה יכול להריץ את ה-mysql deployment .
+kind: PersistentVolume
+metadata:
+  name: nfs-worker2-mysql
+  labels:
+    storage.k8s.io/name: nfs
+    storage.k8s.io/part-of: kubernetes-complete-reference
+    storage.k8s.io/created-by: ssbostan
+spec:
+  accessModes:
+    - ReadWriteOnce
+    - ReadOnlyMany
+    - ReadWriteMany
+  capacity:
+    storage: 10Gi
+  storageClassName: "rtg-data-mysql"
+  persistentVolumeReclaimPolicy: Recycle
+  volumeMode: Filesystem
+  nfs:
+    server: 192.168.31.39 #worker2
+    path: /rtg-data/mysql #must mkdir /rtg-data && mkdir /rtg-data/mysql
+    readOnly: no
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs-worker2
+  labels:
+    storage.k8s.io/name: nfs
+    storage.k8s.io/part-of: kubernetes-complete-reference
+    storage.k8s.io/created-by: ssbostan
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: "rtg-data-mysql"
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 3306
+    targetPort: 3306
+    nodePort: 31306
+  selector:
+    app: mysql
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/part-of: kubernetes-complete-reference
+    app.kubernetes.io/created-by: ssbostan
+spec:
+  replicas:
+  selector:
+    matchLabels:
+      app: mysql
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      nodeName: worker #the node that runs the application 
+      containers:
+        - image: mysql:8.0.18
+          name: mysql
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              #value: pass
+              valueFrom:
+                secretKeyRef:
+                   name: mysql-secret
+                   key: root-password
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                   name: mysql-secret
+                   key: username
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                   name: mysql-secret
+                   key: password
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                   name: mysql-secret
+                   key: database
+          ports:
+            - containerPort: 3306
+          volumeMounts:
+            - mountPath: /var/lib/mysql
+              name: nfs-worker2-mysql
+      volumes:
+        - name: nfs-worker2-mysql
+          nfs:
+            server: 192.168.31.39 #worker2
+            path: /rtg-data/mysql
+            readOnly: no
+
